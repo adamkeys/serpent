@@ -6,12 +6,25 @@ import (
 	"github.com/adamkeys/serpent"
 )
 
+func TestInitRequired(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Errorf("expected a panic")
+		}
+	}()
+
+	program := serpent.Program[int, int]("result = input + 2")
+	serpent.Run(program, 1)
+}
+
 func TestRun(t *testing.T) {
-	err := serpent.Init("/usr/local/Cellar/python3.9/3.9.0_5/Frameworks/Python.framework/Versions/3.9/lib/libpython3.9.dylib")
+	lib, err := serpent.Lib()
 	if err != nil {
+		t.Fatalf("set LIBPYTHON_PATH: %v", err)
+	}
+	if err := serpent.Init(lib); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	defer serpent.Finalize()
 
 	t.Run("Add", func(t *testing.T) {
 		program := serpent.Program[int, int]("result = input + 2")

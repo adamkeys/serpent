@@ -73,22 +73,13 @@ func Init(libraryPath string) error {
 	return nil
 }
 
-// Finalize finalizes the Python interpreter, unloading the Python shared library. This must be called when
-// the program is finished using the Python interpreter.
-func Finalize() {
-	if python == 0 {
-		return
-	}
-
-	close(execCh)
-	py_Finalize()
-	purego.Dlclose(python)
-	python = 0
-}
-
 // Run runs a [Program] with the supplied argument and returns the result. The Python code must assign
 // a result variable in the main program.
 func Run[TInput, TResult any](program Program[TInput, TResult], arg TInput) (TResult, error) {
+	if python == 0 {
+		panic("serpent: Init must be called before Run")
+	}
+
 	resultCh := make(chan result)
 	execCh <- execContext{
 		program: program,
