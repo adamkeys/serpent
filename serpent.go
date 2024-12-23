@@ -2,9 +2,12 @@
 package serpent
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"os"
 	"runtime"
-	"strings"
 
 	"github.com/ebitengine/purego"
 )
@@ -14,8 +17,13 @@ type pyObject uintptr
 type pyThreadState uintptr
 
 // Function prototypes for the Python C API.
-var py_Initialize func()
+var py_InitializeEx func(int)
 var py_Finalize func()
+var py_NewInterpreter func() pyThreadState
+var py_EndInterpreter func(pyThreadState)
+var pyThreadState_Swap func(pyThreadState)
+var pyGILState_Ensure func() pyThreadState
+var pyGILState_Release func(pyThreadState)
 var pyEval_InitThreads func()
 var pyErr_Occurred func() bool
 var pyErr_Print func()
@@ -31,6 +39,13 @@ var pyLong_AsLong func(pyObject) int
 var py_DecRef func(pyObject)
 var pyRun_String func(string, int, pyObject, pyObject) pyObject
 
+var (
+	// ErrRunFailed is returned when the Python program fails to run.
+	ErrRunFailed = errors.New("run failed")
+	// ErrNoResult is returned when the result variable is not found in the Python program.
+	ErrNoResult = errors.New("no result")
+)
+
 // Constants used in the Python C API.
 const pyFileInput = 257
 
@@ -38,7 +53,7 @@ var (
 	// python is a handle to the Python shared library.
 	python uintptr
 	// execCh is a channel for receiving Python programs.
-	execCh = make(chan execContext)
+	execCh chan func()
 )
 
 // Init initializes the Python interpreter, loading the Python shared library from the supplied path. This
@@ -49,10 +64,15 @@ func Init(libraryPath string) error {
 		return fmt.Errorf("dlopen: %v", err)
 	}
 	python = lib
-	execCh = make(chan execContext)
+	execCh = make(chan func(), 1)
 
-	purego.RegisterLibFunc(&py_Initialize, python, "Py_Initialize")
+	purego.RegisterLibFunc(&py_InitializeEx, python, "Py_InitializeEx")
 	purego.RegisterLibFunc(&py_Finalize, python, "Py_Finalize")
+	purego.RegisterLibFunc(&py_NewInterpreter, python, "Py_NewInterpreter")
+	purego.RegisterLibFunc(&py_EndInterpreter, python, "Py_EndInterpreter")
+	purego.RegisterLibFunc(&pyThreadState_Swap, python, "PyThreadState_Swap")
+	purego.RegisterLibFunc(&pyGILState_Ensure, python, "PyGILState_Ensure")
+	purego.RegisterLibFunc(&pyGILState_Release, python, "PyGILState_Release")
 	purego.RegisterLibFunc(&pyErr_Occurred, python, "PyErr_Occurred")
 	purego.RegisterLibFunc(&pyErr_Print, python, "PyErr_Print")
 	purego.RegisterLibFunc(&pyObject_Type, python, "PyObject_Type")
@@ -67,8 +87,7 @@ func Init(libraryPath string) error {
 	purego.RegisterLibFunc(&py_DecRef, python, "Py_DecRef")
 	purego.RegisterLibFunc(&pyRun_String, python, "PyRun_String")
 
-	py_Initialize()
-	go start()
+	py_InitializeEx(0)
 
 	return nil
 }
@@ -80,81 +99,80 @@ func Run[TInput, TResult any](program Program[TInput, TResult], arg TInput) (TRe
 		panic("serpent: Init must be called before Run")
 	}
 
-	resultCh := make(chan result)
-	execCh <- execContext{
-		program: program,
-		input:   arg,
-		result:  resultCh,
+	input, err := json.Marshal(arg)
+	if err != nil {
+		return *new(TResult), fmt.Errorf("marshal input: %w", err)
 	}
-	result := <-resultCh
-	if result.err != nil {
-		return *new(TResult), result.err
+	code := generateCode(string(program), input)
+
+	result, err := run(code)
+	if err != nil {
+		return *new(TResult), err
 	}
-	return result.value.(TResult), nil
+
+	var value TResult
+	if err := json.Unmarshal([]byte(result), &value); err != nil {
+		return *new(TResult), fmt.Errorf("unmarshal result: %w", err)
+	}
+
+	return value, nil
 }
 
-// programmer identifies a Python program.
-type programmer interface {
-	// getCode returns the code for the program.
-	getCode() string
-	// transformInput transforms the input into a JSON byte slice.
-	transformInput(value any) ([]byte, error)
-	// transformOutput transforms the JSON byte slice into the output.
-	transformOutput(data []byte) (any, error)
+// RunFd runs a [Program] with the supplied argument with the Python program writing to the supplied writer.
+func RunWrite[TInput any](w io.Writer, program Program[TInput, Writer], arg TInput) error {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("pipe: %w", err)
+	}
+	go io.Copy(w, pr)
+
+	input, err := json.Marshal(struct {
+		Input TInput
+		Fd    uintptr
+	}{arg, pw.Fd()})
+	if err != nil {
+		return fmt.Errorf("marshal input: %w", err)
+	}
+	code := generateWriterCode(string(program), input)
+
+	_, err = run(code)
+	if !errors.Is(err, ErrNoResult) {
+		return fmt.Errorf("run: %w (expected: %v)", err, ErrNoResult)
+	}
+
+	if err := pw.Close(); err != nil {
+		return fmt.Errorf("close writer: %w", err)
+	}
+	if err := pr.Close(); err != nil {
+		return fmt.Errorf("close reader: %w", err)
+	}
+	return nil
 }
 
-// result identifies the result of a program execution. It contains the result and an error if one occurred.
-type result struct {
-	value any
-	err   error
-}
-
-// execContext identifies an execution context.
-type execContext struct {
-	program programmer
-	input   any
-	result  chan<- result
-}
-
-// start starts the Python interpreter in a loop executing each program as they are received from the channel.
-func start() {
+// run runs the Python program and returns the result.
+func run(code string) (value string, err error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	for ctx := range execCh {
-		program := ctx.program
-		input, err := program.transformInput(ctx.input)
-		if err != nil {
-			ctx.result <- result{err: err}
-			continue
-		}
+	state := py_NewInterpreter()
+	pyThreadState_Swap(state)
+	defer py_EndInterpreter(state)
 
-		var main strings.Builder
-		main.WriteString("import json\n")
-		main.WriteString("input = json.loads('")
-		main.Write(input)
-		main.WriteString("')\n")
-		main.WriteString(program.getCode())
-		main.WriteString("\n_result = json.dumps(result)")
+	global := pyDict_New()
+	defer py_DecRef(global)
+	local := pyDict_New()
+	defer py_DecRef(local)
 
-		func() {
-			global := pyDict_New()
-			defer py_DecRef(global)
-			local := pyDict_New()
-			defer py_DecRef(local)
-
-			var result result
-			pyRun_String(main.String(), pyFileInput, global, local)
-			if pyErr_Occurred() {
-				pyErr_Print()
-				result.err = fmt.Errorf("run failed")
-			} else {
-				item := pyDict_GetItemString(local, "_result")
-				data := pyUnicode_AsUTF8(item)
-				result.value, result.err = program.transformOutput([]byte(data))
-			}
-
-			ctx.result <- result
-		}()
+	pyRun_String(code, pyFileInput, global, local)
+	if pyErr_Occurred() {
+		pyErr_Print()
+		return "", ErrRunFailed
 	}
+
+	if item := pyDict_GetItemString(local, "_result"); item != 0 {
+		value := pyUnicode_AsUTF8(item)
+		return value, nil
+	}
+
+	return "", ErrNoResult
 }

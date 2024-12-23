@@ -1,24 +1,37 @@
 package serpent
 
-import "encoding/json"
+import "strings"
+
+// Writer is a result type which indicates that the program writes to the output.
+// e.g. Program[string, Writer] is a program that writes to the output.
+type Writer struct{}
 
 // Program identifies a Python program.
 type Program[TInput, TResult any] string
 
-// Functions that implement the [programmer] interface.
-func (p Program[TInput, TResult]) getCode() string { return string(p) }
-func (p Program[TInput, TResult]) transformInput(value any) ([]byte, error) {
-	return json.Marshal(value)
-}
-func (p Program[TInput, TResult]) transformOutput(data []byte) (any, error) {
-	return unmarshalJSON[TResult](data)
+// generateCode generates the Python code for the program.
+func generateCode(code string, input []byte) string {
+	var builder strings.Builder
+	builder.WriteString("import json\n")
+	builder.WriteString("input = json.loads('")
+	builder.Write(input)
+	builder.WriteString("')\n")
+	builder.WriteString(code)
+	builder.WriteString(`
+try:
+	_result = json.dumps(result)
+except:
+	pass
+`)
+	return builder.String()
 }
 
-// unmarshalJSON unmarshals the JSON byte slice into the result of type TResult.
-func unmarshalJSON[TResult any](data []byte) (any, error) {
-	var result TResult
-	if err := json.Unmarshal(data, &result); err != nil {
-		return result, err
-	}
-	return result, nil
+// generateCode generates the Python code for the program.
+func generateWriterCode(code string, input []byte) string {
+	var builder strings.Builder
+	builder.WriteString("fd = input['Fd']\n")
+	builder.WriteString("input = input['Input']\n")
+	builder.WriteString(code)
+
+	return generateCode(builder.String(), input)
 }
