@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"sync"
 
 	"github.com/ebitengine/purego"
 )
@@ -18,16 +19,12 @@ type pyThreadState uintptr
 
 // Function prototypes for the Python C API.
 var py_InitializeEx func(int)
-var py_Finalize func()
 var py_NewInterpreter func() pyThreadState
 var py_EndInterpreter func(pyThreadState)
 var pyThreadState_Swap func(pyThreadState)
-var pyGILState_Ensure func() pyThreadState
-var pyGILState_Release func(pyThreadState)
 var pyEval_InitThreads func()
 var pyErr_Occurred func() bool
 var pyErr_Print func()
-var pyObject_Type func(pyObject) pyObject
 var pyDict_New func() pyObject
 var pyDict_Copy func(pyObject) pyObject
 var pyDict_GetItemString func(pyObject, string) pyObject
@@ -49,12 +46,8 @@ var (
 // Constants used in the Python C API.
 const pyFileInput = 257
 
-var (
-	// python is a handle to the Python shared library.
-	python uintptr
-	// execCh is a channel for receiving Python programs.
-	execCh chan func()
-)
+// python is a handle to the Python shared library.
+var python uintptr
 
 // Init initializes the Python interpreter, loading the Python shared library from the supplied path. This
 // must be called before any other functions in this package.
@@ -64,18 +57,14 @@ func Init(libraryPath string) error {
 		return fmt.Errorf("dlopen: %v", err)
 	}
 	python = lib
-	execCh = make(chan func(), 1)
 
 	purego.RegisterLibFunc(&py_InitializeEx, python, "Py_InitializeEx")
-	purego.RegisterLibFunc(&py_Finalize, python, "Py_Finalize")
+	purego.RegisterLibFunc(&pyEval_InitThreads, python, "PyEval_InitThreads")
 	purego.RegisterLibFunc(&py_NewInterpreter, python, "Py_NewInterpreter")
 	purego.RegisterLibFunc(&py_EndInterpreter, python, "Py_EndInterpreter")
 	purego.RegisterLibFunc(&pyThreadState_Swap, python, "PyThreadState_Swap")
-	purego.RegisterLibFunc(&pyGILState_Ensure, python, "PyGILState_Ensure")
-	purego.RegisterLibFunc(&pyGILState_Release, python, "PyGILState_Release")
 	purego.RegisterLibFunc(&pyErr_Occurred, python, "PyErr_Occurred")
 	purego.RegisterLibFunc(&pyErr_Print, python, "PyErr_Print")
-	purego.RegisterLibFunc(&pyObject_Type, python, "PyObject_Type")
 	purego.RegisterLibFunc(&pyDict_New, python, "PyDict_New")
 	purego.RegisterLibFunc(&pyDict_Copy, python, "PyDict_Copy")
 	purego.RegisterLibFunc(&pyDict_GetItemString, python, "PyDict_GetItemString")
@@ -95,9 +84,7 @@ func Init(libraryPath string) error {
 // Run runs a [Program] with the supplied argument and returns the result. The Python code must assign
 // a result variable in the main program.
 func Run[TInput, TResult any](program Program[TInput, TResult], arg TInput) (TResult, error) {
-	if python == 0 {
-		panic("serpent: Init must be called before Run")
-	}
+	checkInit()
 
 	input, err := json.Marshal(arg)
 	if err != nil {
@@ -120,11 +107,19 @@ func Run[TInput, TResult any](program Program[TInput, TResult], arg TInput) (TRe
 
 // RunFd runs a [Program] with the supplied argument with the Python program writing to the supplied writer.
 func RunWrite[TInput any](w io.Writer, program Program[TInput, Writer], arg TInput) error {
+	checkInit()
+
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		return fmt.Errorf("pipe: %w", err)
 	}
-	go io.Copy(w, pr)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer pr.Close()
+		io.Copy(w, pr)
+	}()
 
 	input, err := json.Marshal(struct {
 		Input TInput
@@ -143,9 +138,8 @@ func RunWrite[TInput any](w io.Writer, program Program[TInput, Writer], arg TInp
 	if err := pw.Close(); err != nil {
 		return fmt.Errorf("close writer: %w", err)
 	}
-	if err := pr.Close(); err != nil {
-		return fmt.Errorf("close reader: %w", err)
-	}
+
+	wg.Wait()
 	return nil
 }
 
@@ -175,4 +169,11 @@ func run(code string) (value string, err error) {
 	}
 
 	return "", ErrNoResult
+}
+
+// checkInit checks if the Python interpreter has been initialized. It panics if it has not.
+func checkInit() {
+	if python == 0 {
+		panic("serpent: Init must be called before Run")
+	}
 }
