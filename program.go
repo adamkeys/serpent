@@ -1,6 +1,9 @@
 package serpent
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // Writer is a result type which indicates that the program writes to the output.
 // e.g. Program[string, Writer] is a program that writes to the output.
@@ -13,9 +16,9 @@ type Program[TInput, TResult any] string
 func generateCode(code string, input []byte) string {
 	var builder strings.Builder
 	builder.WriteString("import json\n")
-	builder.WriteString("input = json.loads('")
-	builder.Write(input)
-	builder.WriteString("')\n")
+	builder.WriteString("input = json.loads(")
+	builder.WriteString(strconv.Quote(string(input)))
+	builder.WriteString(")\n")
 	builder.WriteString(code)
 	builder.WriteString(`
 try:
