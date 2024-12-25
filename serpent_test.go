@@ -50,6 +50,21 @@ func TestRun_Struct(t *testing.T) {
 	}
 }
 
+func TestRun_EscapedString(t *testing.T) {
+	initPython(t)
+
+	const exp = "\"test\""
+	program := serpent.Program[string, string]("result = input")
+	result, err := serpent.Run(program, exp)
+	if err != nil {
+		t.Fatalf("run result: %v", err)
+	}
+
+	if result != exp {
+		t.Errorf("unexpected result: %q; got: %q", exp, result)
+	}
+}
+
 func TestRun_ImportTwice(t *testing.T) {
 	initPython(t)
 

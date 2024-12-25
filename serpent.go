@@ -182,9 +182,7 @@ func start() {
 
 	for run := range codeCh {
 		global := pyDict_New()
-		defer py_DecRef(global)
 		local := pyDict_New()
-		defer py_DecRef(local)
 
 		pyRun_String(run.code, pyFileInput, global, local)
 		if pyErr_Occurred() {
@@ -195,6 +193,9 @@ func start() {
 		} else {
 			run.err = ErrNoResult
 		}
+
+		py_DecRef(local)
+		py_DecRef(global)
 
 		// This is a good candidate for sending the result on a channel, but doing so conflicts with Python's GIL.
 		// To work around that we set the result on the context and signal that the run is complete. The calling
