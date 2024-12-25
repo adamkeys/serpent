@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 
 	"github.com/ebitengine/purego"
 )
@@ -19,10 +20,9 @@ type pyThreadState uintptr
 
 // Function prototypes for the Python C API.
 var py_InitializeEx func(int)
-var py_NewInterpreter func() pyThreadState
-var py_EndInterpreter func(pyThreadState)
-var pyThreadState_Swap func(pyThreadState)
-var pyEval_InitThreads func()
+var py_Release func()
+var pyGILState_Ensure func() pyThreadState
+var pyGILState_Release func(pyThreadState)
 var pyErr_Occurred func() bool
 var pyErr_Print func()
 var pyDict_New func() pyObject
@@ -37,6 +37,8 @@ var py_DecRef func(pyObject)
 var pyRun_String func(string, int, pyObject, pyObject) pyObject
 
 var (
+	// ErrAlreadyInitialized is returned when the Python interpreter is initialized more than once.
+	ErrAlreadyInitialized = errors.New("already initialized")
 	// ErrRunFailed is returned when the Python program fails to run.
 	ErrRunFailed = errors.New("run failed")
 	// ErrNoResult is returned when the result variable is not found in the Python program.
@@ -52,6 +54,10 @@ var python uintptr
 // Init initializes the Python interpreter, loading the Python shared library from the supplied path. This
 // must be called before any other functions in this package.
 func Init(libraryPath string) error {
+	if python != 0 {
+		return ErrAlreadyInitialized
+	}
+
 	lib, err := purego.Dlopen(libraryPath, purego.RTLD_NOW|purego.RTLD_GLOBAL)
 	if err != nil {
 		return fmt.Errorf("dlopen: %v", err)
@@ -59,10 +65,9 @@ func Init(libraryPath string) error {
 	python = lib
 
 	purego.RegisterLibFunc(&py_InitializeEx, python, "Py_InitializeEx")
-	purego.RegisterLibFunc(&pyEval_InitThreads, python, "PyEval_InitThreads")
-	purego.RegisterLibFunc(&py_NewInterpreter, python, "Py_NewInterpreter")
-	purego.RegisterLibFunc(&py_EndInterpreter, python, "Py_EndInterpreter")
-	purego.RegisterLibFunc(&pyThreadState_Swap, python, "PyThreadState_Swap")
+	purego.RegisterLibFunc(&py_Release, python, "Py_Finalize")
+	purego.RegisterLibFunc(&pyGILState_Ensure, python, "PyGILState_Ensure")
+	purego.RegisterLibFunc(&pyGILState_Release, python, "PyGILState_Release")
 	purego.RegisterLibFunc(&pyErr_Occurred, python, "PyErr_Occurred")
 	purego.RegisterLibFunc(&pyErr_Print, python, "PyErr_Print")
 	purego.RegisterLibFunc(&pyDict_New, python, "PyDict_New")
@@ -76,7 +81,7 @@ func Init(libraryPath string) error {
 	purego.RegisterLibFunc(&py_DecRef, python, "Py_DecRef")
 	purego.RegisterLibFunc(&pyRun_String, python, "PyRun_String")
 
-	py_InitializeEx(0)
+	go start()
 
 	return nil
 }
@@ -132,7 +137,7 @@ func RunWrite[TInput any](w io.Writer, program Program[TInput, Writer], arg TInp
 
 	_, err = run(code)
 	if !errors.Is(err, ErrNoResult) {
-		return fmt.Errorf("run: %w (expected: %v)", err, ErrNoResult)
+		return err
 	}
 
 	if err := pw.Close(); err != nil {
@@ -143,32 +148,61 @@ func RunWrite[TInput any](w io.Writer, program Program[TInput, Writer], arg TInp
 	return nil
 }
 
-// run runs the Python program and returns the result.
-func run(code string) (value string, err error) {
+// runContext identifies the context of a Python run.
+type runContext struct {
+	code  string
+	done  atomic.Uint32
+	value string
+	err   error
+}
+
+// run runs a Python program and returns the result.
+func run(code string) (string, error) {
+	ctx := &runContext{code: code}
+	codeCh <- ctx
+	for {
+		if ctx.done.Load() == 1 {
+			break
+		}
+	}
+
+	return ctx.value, ctx.err
+}
+
+// codeCh is a channel for sending Python code to the Python interpreter.
+var codeCh = make(chan *runContext, 1)
+
+// start runs a loop waiting for instructions.
+func start() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	state := py_NewInterpreter()
-	pyThreadState_Swap(state)
-	defer py_EndInterpreter(state)
+	py_InitializeEx(0)
+	defer py_Release()
 
-	global := pyDict_New()
-	defer py_DecRef(global)
-	local := pyDict_New()
-	defer py_DecRef(local)
+	for run := range codeCh {
+		global := pyDict_New()
+		defer py_DecRef(global)
+		local := pyDict_New()
+		defer py_DecRef(local)
 
-	pyRun_String(code, pyFileInput, global, local)
-	if pyErr_Occurred() {
-		pyErr_Print()
-		return "", ErrRunFailed
+		pyRun_String(run.code, pyFileInput, global, local)
+		if pyErr_Occurred() {
+			pyErr_Print()
+			run.err = ErrRunFailed
+		} else if item := pyDict_GetItemString(local, "_result"); item != 0 {
+			run.value = pyUnicode_AsUTF8(item)
+		} else {
+			run.err = ErrNoResult
+		}
+
+		// This is a good candidate for sending the result on a channel, but doing so conflicts with Python's GIL.
+		// To work around that we set the result on the context and signal that the run is complete. The calling
+		// Run function watches for changes on the done state to know when the result is ready.
+		if !run.done.CompareAndSwap(0, 1) {
+			panic("serpent: run already complete")
+		}
 	}
-
-	if item := pyDict_GetItemString(local, "_result"); item != 0 {
-		value := pyUnicode_AsUTF8(item)
-		return value, nil
-	}
-
-	return "", ErrNoResult
 }
 
 // checkInit checks if the Python interpreter has been initialized. It panics if it has not.
