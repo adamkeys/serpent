@@ -194,15 +194,15 @@ func start() {
 			run.err = ErrNoResult
 		}
 
-		py_DecRef(local)
-		py_DecRef(global)
-
 		// This is a good candidate for sending the result on a channel, but doing so conflicts with Python's GIL.
 		// To work around that we set the result on the context and signal that the run is complete. The calling
 		// Run function watches for changes on the done state to know when the result is ready.
 		if !run.done.CompareAndSwap(0, 1) {
 			panic("serpent: run already complete")
 		}
+
+		py_DecRef(local)
+		py_DecRef(global)
 	}
 }
 
