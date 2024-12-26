@@ -100,6 +100,10 @@ func TestRun_NoResult(t *testing.T) {
 }
 
 func TestRun_SlowExecution(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow test")
+	}
+
 	initPython(t)
 
 	program := serpent.Program[string, string]("import time; time.sleep(1); result = input")
