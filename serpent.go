@@ -9,7 +9,6 @@ import (
 	"os"
 	"runtime"
 	"sync"
-	"sync/atomic"
 
 	"github.com/ebitengine/purego"
 )
@@ -88,6 +87,10 @@ func Init(libraryPath string) error {
 
 // Run runs a [Program] with the supplied argument and returns the result. The Python code must assign
 // a result variable in the main program.
+//
+// Example Python program:
+//
+//	result = input + 1
 func Run[TInput, TResult any](program Program[TInput, TResult], arg TInput) (TResult, error) {
 	checkInit()
 
@@ -111,6 +114,14 @@ func Run[TInput, TResult any](program Program[TInput, TResult], arg TInput) (TRe
 }
 
 // RunFd runs a [Program] with the supplied argument with the Python program writing to the supplied writer.
+// The writer is made available as a file descriptor (fd) in the Python program. The Python program must close
+// the file descriptor when it is done writing.
+//
+// Example Python program:
+//
+//	import os
+//	os.write(fd, b'OK')
+//	os.close(fd)
 func RunWrite[TInput any](w io.Writer, program Program[TInput, Writer], arg TInput) error {
 	checkInit()
 
@@ -143,34 +154,40 @@ func RunWrite[TInput any](w io.Writer, program Program[TInput, Writer], arg TInp
 	if err := pw.Close(); err != nil {
 		return fmt.Errorf("close writer: %w", err)
 	}
-
 	wg.Wait()
+
 	return nil
 }
 
 // runContext identifies the context of a Python run.
 type runContext struct {
-	code  string
-	done  atomic.Uint32
+	code string
+
+	cond *sync.Cond
+	done bool
+
 	value string
 	err   error
 }
 
 // run runs a Python program and returns the result.
 func run(code string) (string, error) {
-	ctx := &runContext{code: code}
-	codeCh <- ctx
-	for {
-		if ctx.done.Load() == 1 {
-			break
-		}
+	var mu sync.Mutex
+	cond := sync.NewCond(&mu)
+	cond.L.Lock()
+	defer cond.L.Unlock()
+
+	ctx := &runContext{code: code, cond: cond}
+	runCh <- ctx
+	for !ctx.done {
+		cond.Wait()
 	}
 
 	return ctx.value, ctx.err
 }
 
-// codeCh is a channel for sending Python code to the Python interpreter.
-var codeCh = make(chan *runContext, 1)
+// runCh is a channel for sending Python code to the Python interpreter.
+var runCh = make(chan *runContext, 1)
 
 // start runs a loop waiting for instructions.
 func start() {
@@ -180,7 +197,9 @@ func start() {
 	py_InitializeEx(0)
 	defer py_Release()
 
-	for run := range codeCh {
+	for run := range runCh {
+		run.cond.L.Lock()
+
 		global := pyDict_New()
 		local := pyDict_New()
 
@@ -196,10 +215,10 @@ func start() {
 
 		// This is a good candidate for sending the result on a channel, but doing so conflicts with Python's GIL.
 		// To work around that we set the result on the context and signal that the run is complete. The calling
-		// Run function watches for changes on the done state to know when the result is ready.
-		if !run.done.CompareAndSwap(0, 1) {
-			panic("serpent: run already complete")
-		}
+		// Run function waits for changes on the done state to know when the result is ready.
+		run.done = true
+		run.cond.Signal()
+		run.cond.L.Unlock()
 
 		py_DecRef(local)
 		py_DecRef(global)
