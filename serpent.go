@@ -15,25 +15,20 @@ import (
 
 // Types used in the Python C API.
 type pyObject uintptr
-type pyThreadState uintptr
 
 // Function prototypes for the Python C API.
 var py_InitializeEx func(int)
 var py_Release func()
-var pyGILState_Ensure func() pyThreadState
-var pyGILState_Release func(pyThreadState)
+var pyRun_String func(string, int, pyObject, pyObject) pyObject
 var pyErr_Occurred func() bool
 var pyErr_Print func()
 var pyDict_New func() pyObject
-var pyDict_Copy func(pyObject) pyObject
 var pyDict_GetItemString func(pyObject, string) pyObject
-var pyDict_SetItemString func(pyObject, string, pyObject) int
-var pyUnicode_FromString func(string) pyObject
 var pyUnicode_AsUTF8 func(pyObject) string
-var pyLong_FromLong func(int) pyObject
-var pyLong_AsLong func(pyObject) int
 var py_DecRef func(pyObject)
-var pyRun_String func(string, int, pyObject, pyObject) pyObject
+
+// Constants used in the Python C API.
+const pyFileInput = 257
 
 var (
 	// ErrAlreadyInitialized is returned when the Python interpreter is initialized more than once.
@@ -43,9 +38,6 @@ var (
 	// ErrNoResult is returned when the result variable is not found in the Python program.
 	ErrNoResult = errors.New("no result")
 )
-
-// Constants used in the Python C API.
-const pyFileInput = 257
 
 // python is a handle to the Python shared library.
 var python uintptr
@@ -65,18 +57,11 @@ func Init(libraryPath string) error {
 
 	purego.RegisterLibFunc(&py_InitializeEx, python, "Py_InitializeEx")
 	purego.RegisterLibFunc(&py_Release, python, "Py_Finalize")
-	purego.RegisterLibFunc(&pyGILState_Ensure, python, "PyGILState_Ensure")
-	purego.RegisterLibFunc(&pyGILState_Release, python, "PyGILState_Release")
 	purego.RegisterLibFunc(&pyErr_Occurred, python, "PyErr_Occurred")
 	purego.RegisterLibFunc(&pyErr_Print, python, "PyErr_Print")
 	purego.RegisterLibFunc(&pyDict_New, python, "PyDict_New")
-	purego.RegisterLibFunc(&pyDict_Copy, python, "PyDict_Copy")
 	purego.RegisterLibFunc(&pyDict_GetItemString, python, "PyDict_GetItemString")
-	purego.RegisterLibFunc(&pyDict_SetItemString, python, "PyDict_SetItemString")
-	purego.RegisterLibFunc(&pyUnicode_FromString, python, "PyUnicode_FromString")
 	purego.RegisterLibFunc(&pyUnicode_AsUTF8, python, "PyUnicode_AsUTF8")
-	purego.RegisterLibFunc(&pyLong_FromLong, python, "PyLong_FromLong")
-	purego.RegisterLibFunc(&pyLong_AsLong, python, "PyLong_AsLong")
 	purego.RegisterLibFunc(&py_DecRef, python, "Py_DecRef")
 	purego.RegisterLibFunc(&pyRun_String, python, "PyRun_String")
 
