@@ -32,7 +32,8 @@ except:
 // generateCode generates the Python code for the program.
 func generateWriterCode(code string, input []byte) string {
 	var builder strings.Builder
-	builder.WriteString("fd = input['Fd']\n")
+	builder.WriteString("import os\n")
+	builder.WriteString("fd = os.dup(input['Fd'])\n")
 	builder.WriteString("input = input['Input']\n")
 	builder.WriteString(code)
 

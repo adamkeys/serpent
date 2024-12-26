@@ -154,6 +154,7 @@ func TestRunWrite_WriteOK(t *testing.T) {
 	program := serpent.Program[*struct{}, serpent.Writer](`
 import os
 os.write(fd, b'OK')
+os.close(fd)
 `)
 	err := serpent.RunWrite(&buf, program, nil)
 	if err != nil {
