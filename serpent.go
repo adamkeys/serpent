@@ -18,12 +18,14 @@ type pyObject uintptr
 
 // Function prototypes for the Python C API.
 var py_InitializeEx func(int)
-var py_Release func()
+var py_Finalize func()
+var pyEval_GetBuiltins func() pyObject
 var pyRun_String func(string, int, pyObject, pyObject) pyObject
 var pyErr_Occurred func() bool
 var pyErr_Print func()
 var pyDict_New func() pyObject
 var pyDict_GetItemString func(pyObject, string) pyObject
+var pyDict_SetItemString func(pyObject, string, pyObject) int
 var pyUnicode_AsUTF8 func(pyObject) string
 var py_DecRef func(pyObject)
 
@@ -56,11 +58,13 @@ func Init(libraryPath string) error {
 	python = lib
 
 	purego.RegisterLibFunc(&py_InitializeEx, python, "Py_InitializeEx")
-	purego.RegisterLibFunc(&py_Release, python, "Py_Finalize")
+	purego.RegisterLibFunc(&py_Finalize, python, "Py_Finalize")
+	purego.RegisterLibFunc(&pyEval_GetBuiltins, python, "PyEval_GetBuiltins")
 	purego.RegisterLibFunc(&pyErr_Occurred, python, "PyErr_Occurred")
 	purego.RegisterLibFunc(&pyErr_Print, python, "PyErr_Print")
 	purego.RegisterLibFunc(&pyDict_New, python, "PyDict_New")
 	purego.RegisterLibFunc(&pyDict_GetItemString, python, "PyDict_GetItemString")
+	purego.RegisterLibFunc(&pyDict_SetItemString, python, "PyDict_SetItemString")
 	purego.RegisterLibFunc(&pyUnicode_AsUTF8, python, "PyUnicode_AsUTF8")
 	purego.RegisterLibFunc(&py_DecRef, python, "Py_DecRef")
 	purego.RegisterLibFunc(&pyRun_String, python, "PyRun_String")
@@ -180,19 +184,19 @@ func start() {
 	defer runtime.UnlockOSThread()
 
 	py_InitializeEx(0)
-	defer py_Release()
+	defer py_Finalize()
 
 	for run := range runCh {
 		run.cond.L.Lock()
 
-		global := pyDict_New()
-		local := pyDict_New()
+		globals := pyDict_New()
+		pyDict_SetItemString(globals, "__builtins__", pyEval_GetBuiltins())
 
-		pyRun_String(run.code, pyFileInput, global, local)
+		pyRun_String(run.code, pyFileInput, globals, globals)
 		if pyErr_Occurred() {
 			pyErr_Print()
 			run.err = ErrRunFailed
-		} else if item := pyDict_GetItemString(local, "_result"); item != 0 {
+		} else if item := pyDict_GetItemString(globals, "_result"); item != 0 {
 			run.value = pyUnicode_AsUTF8(item)
 		} else {
 			run.err = ErrNoResult
@@ -205,8 +209,7 @@ func start() {
 		run.cond.Signal()
 		run.cond.L.Unlock()
 
-		py_DecRef(local)
-		py_DecRef(global)
+		py_DecRef(globals)
 	}
 }
 

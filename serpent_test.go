@@ -151,6 +151,25 @@ func TestRun_MultiExecution(t *testing.T) {
 	}
 }
 
+func TestRun_FunctionScope(t *testing.T) {
+	initPython(t)
+
+	program := serpent.Program[*struct{}, int](`import math
+def calc():
+	return int(math.sqrt(4))
+result = calc()
+`)
+	result, err := serpent.Run(program, nil)
+	if err != nil {
+		t.Fatalf("run result: %v", err)
+	}
+
+	const exp = 2
+	if result != exp {
+		t.Errorf("unexpected result: %q; got: %q", exp, result)
+	}
+}
+
 func TestRunWrite_WriteOK(t *testing.T) {
 	initPython(t)
 
