@@ -467,9 +467,12 @@ func run(code string) (string, error) {
 	return ctx.value, ctx.err
 }
 
+// PythonNotInitialized is a panic type indicating that the Python interpreter has not been initialized.
+type PythonNotInitialized string
+
 // checkInit checks if the Python interpreter has been initialized. It panics if it has not.
 func checkInit() {
 	if python == 0 {
-		panic("serpent: Init must be called before Run")
+		panic(PythonNotInitialized("serpent: Init must be called before Run"))
 	}
 }

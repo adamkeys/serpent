@@ -3,26 +3,15 @@ package serpent_test
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"os"
 	"sync"
 	"testing"
 
 	"github.com/adamkeys/serpent"
 )
 
-func TestInitRequired(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Errorf("expected a panic")
-		}
-	}()
-
-	program := serpent.Program[int, int]("result = input + 2")
-	serpent.Run(program, 1)
-}
-
 func TestRun_Add(t *testing.T) {
-	initPython(t)
-
 	program := serpent.Program[int, int]("result = input + 2")
 	result, err := serpent.Run(program, 1)
 	if err != nil {
@@ -36,8 +25,6 @@ func TestRun_Add(t *testing.T) {
 }
 
 func TestRun_Struct(t *testing.T) {
-	initPython(t)
-
 	program := serpent.Program[struct{ Name string }, string]("result = input['Name']")
 	result, err := serpent.Run(program, struct{ Name string }{Name: "test"})
 	if err != nil {
@@ -51,8 +38,6 @@ func TestRun_Struct(t *testing.T) {
 }
 
 func TestRun_EscapedString(t *testing.T) {
-	initPython(t)
-
 	const exp = "\"test\""
 	program := serpent.Program[string, string]("result = input")
 	result, err := serpent.Run(program, exp)
@@ -66,8 +51,6 @@ func TestRun_EscapedString(t *testing.T) {
 }
 
 func TestRun_ImportTwice(t *testing.T) {
-	initPython(t)
-
 	program := serpent.Program[int, int]("import os; result = input + 2")
 	_, err := serpent.Run(program, 1)
 	if err != nil {
@@ -80,8 +63,6 @@ func TestRun_ImportTwice(t *testing.T) {
 }
 
 func TestRun_InvalidProgram(t *testing.T) {
-	initPython(t)
-
 	program := serpent.Program[string, string]("(")
 	_, err := serpent.Run(program, "test")
 	if !errors.Is(err, serpent.ErrRunFailed) {
@@ -90,8 +71,6 @@ func TestRun_InvalidProgram(t *testing.T) {
 }
 
 func TestRun_NoResult(t *testing.T) {
-	initPython(t)
-
 	program := serpent.Program[string, string]("input")
 	_, err := serpent.Run(program, "test")
 	if !errors.Is(err, serpent.ErrNoResult) {
@@ -104,8 +83,6 @@ func TestRun_SlowExecution(t *testing.T) {
 		t.Skip("skipping slow test")
 	}
 
-	initPython(t)
-
 	program := serpent.Program[string, string]("import time; time.sleep(1); result = input")
 	result, err := serpent.Run(program, "test")
 	if err != nil {
@@ -117,8 +94,6 @@ func TestRun_SlowExecution(t *testing.T) {
 }
 
 func TestRun_MultiExecution(t *testing.T) {
-	initPython(t)
-
 	program := serpent.Program[*struct{}, int]("result = 1 + 1")
 	results := make([]int, 10)
 	errCh := make(chan error, len(results))
@@ -152,8 +127,6 @@ func TestRun_MultiExecution(t *testing.T) {
 }
 
 func TestRun_FunctionScope(t *testing.T) {
-	initPython(t)
-
 	program := serpent.Program[*struct{}, int](`import math
 def calc():
 	return int(math.sqrt(4))
@@ -171,8 +144,6 @@ result = calc()
 }
 
 func TestRunWrite_WriteOK(t *testing.T) {
-	initPython(t)
-
 	var buf bytes.Buffer
 	program := serpent.Program[*struct{}, serpent.Writer](`
 import os
@@ -190,14 +161,27 @@ os.close(fd)
 	}
 }
 
-func initPython(t testing.TB) {
-	t.Helper()
+func TestMain(m *testing.M) {
+	// Test that running without Init panics with PythonNotInitialized. This is considered to
+	// be a test case but cannot be in its own test function as the library initialization is global.
+	func() {
+		defer func() {
+			if _, ok := recover().(serpent.PythonNotInitialized); !ok {
+				panic("expected PythonNotInitialized panic")
+			}
+		}()
+		program := serpent.Program[int, int]("result = input + 2")
+		serpent.Run(program, 1)
+	}()
 
 	lib, err := serpent.Lib()
 	if err != nil {
-		t.Fatalf("set LIBPYTHON_PATH: %v", err)
+		fmt.Fprintf(os.Stderr, "set LIBPYTHON_PATH: %v", err)
+		os.Exit(1)
 	}
 	if err := serpent.Init(lib); err != nil && !errors.Is(err, serpent.ErrAlreadyInitialized) {
-		t.Fatalf("init: %v", err)
+		fmt.Fprintf(os.Stderr, "init: %v", err)
+		os.Exit(1)
 	}
+	os.Exit(m.Run())
 }
