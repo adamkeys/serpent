@@ -137,14 +137,17 @@ func Init(libraryPath string) error {
 	purego.RegisterLibFunc(&py_DecRef, python, "Py_DecRef")
 	purego.RegisterLibFunc(&pyRun_String, python, "PyRun_String")
 	purego.RegisterLibFunc(&py_GetVersion, python, "Py_GetVersion")
-	purego.RegisterLibFunc(&py_NewInterpreterFromConfig, python, "Py_NewInterpreterFromConfig")
-	purego.RegisterLibFunc(&py_EndInterpreter, python, "Py_EndInterpreter")
-	purego.RegisterLibFunc(&pyThreadState_Swap, python, "PyThreadState_Swap")
-	purego.RegisterLibFunc(&pyThreadState_Get, python, "PyThreadState_Get")
-	purego.RegisterLibFunc(&pyEval_SaveThread, python, "PyEval_SaveThread")
-	purego.RegisterLibFunc(&pyEval_RestoreThread, python, "PyEval_RestoreThread")
 
-	supportsSubInterpreters = checkPythonVersion()
+	supportsSubInterpreters := platformSupportsSubInterpreters && checkPythonVersion()
+	if supportsSubInterpreters {
+		purego.RegisterLibFunc(&py_NewInterpreterFromConfig, python, "Py_NewInterpreterFromConfig")
+		purego.RegisterLibFunc(&py_EndInterpreter, python, "Py_EndInterpreter")
+		purego.RegisterLibFunc(&pyThreadState_Swap, python, "PyThreadState_Swap")
+		purego.RegisterLibFunc(&pyThreadState_Get, python, "PyThreadState_Get")
+		purego.RegisterLibFunc(&pyEval_SaveThread, python, "PyEval_SaveThread")
+		purego.RegisterLibFunc(&pyEval_RestoreThread, python, "PyEval_RestoreThread")
+	}
+
 	numWorkers := runtime.NumCPU()
 	workerPool = &pool{
 		workers: make([]*worker, 0, numWorkers),

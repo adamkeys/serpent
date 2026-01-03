@@ -8,6 +8,9 @@ import (
 	"runtime"
 )
 
+// platformSupportsSubInterpreters indicates whether the current platform supports Python sub-interpreters.
+var platformSupportsSubInterpreters = true
+
 // archLibDirs maps GOARCH to the corresponding library directory names on Linux.
 var archLibDirs = map[string][]string{
 	"amd64": {"x86_64-linux-gnu", "lib64"},

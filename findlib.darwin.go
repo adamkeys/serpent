@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 )
 
+// platformSupportsSubInterpreters indicates whether the current platform supports Python sub-interpreters.
+var platformSupportsSubInterpreters = true
+
 // searchPaths returns the list of paths to search for Python shared libraries on macOS.
 func searchPaths() []string {
 	paths := []string{

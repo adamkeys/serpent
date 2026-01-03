@@ -1,2 +1,2 @@
-github.com/ebitengine/purego v0.8.1 h1:sdRKd6plj7KYW33EH5As6YKfe8m9zbN9JMrOjNVF/BE=
-github.com/ebitengine/purego v0.8.1/go.mod h1:iIjxzd6CiRiOG0UyXP+V1+jWqUXVjPKLAI0mRfJZTmQ=
+github.com/tmc/purego v0.0.0-20251108172255-a82375ff6944 h1:rOK0w76tz94IZiwufJv8atdcNr2JLpmNPmJiHchakhY=
+github.com/tmc/purego v0.0.0-20251108172255-a82375ff6944/go.mod h1:iIjxzd6CiRiOG0UyXP+V1+jWqUXVjPKLAI0mRfJZTmQ=
