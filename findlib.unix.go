@@ -1,34 +1,18 @@
-//go:build linux
+//go:build unix && !(darwin || linux)
 
 package serpent
 
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
-// archLibDirs maps GOARCH to the corresponding library directory names on Linux.
-var archLibDirs = map[string][]string{
-	"amd64": {"x86_64-linux-gnu", "lib64"},
-	"arm64": {"aarch64-linux-gnu", "lib64"},
-	"arm":   {"arm-linux-gnueabihf", "arm-linux-gnueabi"},
-	"386":   {"i386-linux-gnu", "i686-linux-gnu", "lib32"},
-}
-
-// searchPaths returns the list of paths to search for Python shared libraries on Linux.
+// searchPaths returns the list of paths to search for Python shared libraries on Unix systems.
 func searchPaths() []string {
-	var paths []string
-	if dirs, ok := archLibDirs[runtime.GOARCH]; ok {
-		for _, dir := range dirs {
-			paths = append(paths, filepath.Join("/usr/lib", dir))
-		}
-	}
-	paths = append(paths,
-		"/usr/lib64",
-		"/usr/lib",
+	paths := []string{
 		"/usr/local/lib",
-	)
+		"/usr/lib",
+	}
 	if home, err := os.UserHomeDir(); err == nil {
 		paths = append(paths,
 			filepath.Join(home, ".pyenv/versions/*/lib"),
@@ -41,7 +25,7 @@ func searchPaths() []string {
 	return paths
 }
 
-// findLib attempts to find a Python shared library on Linux systems.
+// findLib attempts to find a Python shared library on Unix systems.
 // It first tries pkg-config, then falls back to searching common paths.
 func findLib() (string, error) {
 	if path, ok := pkgConfigLibPath(".so"); ok {
