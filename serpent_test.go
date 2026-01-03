@@ -63,10 +63,44 @@ func TestRun_ImportTwice(t *testing.T) {
 }
 
 func TestRun_InvalidProgram(t *testing.T) {
-	program := serpent.Program[string, string]("(")
-	_, err := serpent.Run(program, "test")
-	if !errors.Is(err, serpent.ErrRunFailed) {
-		t.Errorf("expected error: %v; got: %v", serpent.ErrRunFailed, err)
+	cases := []struct {
+		name string
+		code string
+		exp  string
+	}{
+		{
+			"SyntaxError",
+			"(",
+			"was never closed",
+		},
+		{
+			"NameError",
+			"result = undefined_var",
+			"name 'undefined_var' is not defined",
+		},
+		{
+			"ZeroDivisionError",
+			"result = 1 / 0",
+			"division by zero",
+		},
+		{
+			"TypeError",
+			"result = 'string' + 1",
+			"can only concatenate str",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			program := serpent.Program[string, string](tc.code)
+			_, err := serpent.Run(program, "test")
+			if !errors.Is(err, serpent.ErrRunFailed) {
+				t.Errorf("expected ErrRunFailed; got: %v", err)
+			}
+			if err == nil || !contains(err.Error(), tc.exp) {
+				t.Errorf("expected error containing: %q; got: %v", tc.exp, err)
+			}
+		})
 	}
 }
 
@@ -184,4 +218,17 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	os.Exit(m.Run())
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstr(s, substr))
+}
+
+func containsSubstr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

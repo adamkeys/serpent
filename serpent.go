@@ -53,6 +53,9 @@ var pyEval_GetBuiltins func() pyObject
 var pyRun_String func(string, int, pyObject, pyObject) pyObject
 var pyErr_Occurred func() bool
 var pyErr_Print func()
+var pyErr_Fetch func(*pyObject, *pyObject, *pyObject)
+var pyErr_Clear func()
+var pyObject_Str func(pyObject) pyObject
 var pyDict_New func() pyObject
 var pyDict_GetItemString func(pyObject, string) pyObject
 var pyDict_SetItemString func(pyObject, string, pyObject) int
@@ -126,6 +129,9 @@ func Init(libraryPath string) error {
 	purego.RegisterLibFunc(&pyEval_GetBuiltins, python, "PyEval_GetBuiltins")
 	purego.RegisterLibFunc(&pyErr_Occurred, python, "PyErr_Occurred")
 	purego.RegisterLibFunc(&pyErr_Print, python, "PyErr_Print")
+	purego.RegisterLibFunc(&pyErr_Fetch, python, "PyErr_Fetch")
+	purego.RegisterLibFunc(&pyErr_Clear, python, "PyErr_Clear")
+	purego.RegisterLibFunc(&pyObject_Str, python, "PyObject_Str")
 	purego.RegisterLibFunc(&pyDict_New, python, "PyDict_New")
 	purego.RegisterLibFunc(&pyDict_GetItemString, python, "PyDict_GetItemString")
 	purego.RegisterLibFunc(&pyDict_SetItemString, python, "PyDict_SetItemString")
@@ -377,6 +383,39 @@ func startSubInterpreterWorker(w *worker) {
 	close(w.done)
 }
 
+// fetchPythonError retrieves the current Python exception and returns it as a Go error.
+// It clears the Python error state after fetching.
+func fetchPythonError() error {
+	var ptype, pvalue, ptraceback pyObject
+	pyErr_Fetch(&ptype, &pvalue, &ptraceback)
+	if pvalue == 0 {
+		pyErr_Clear()
+		return ErrRunFailed
+	}
+
+	strObj := pyObject_Str(pvalue)
+	var msg string
+	if strObj != 0 {
+		msg = pyUnicode_AsUTF8(strObj)
+		py_DecRef(strObj)
+	}
+
+	if ptype != 0 {
+		py_DecRef(ptype)
+	}
+	if pvalue != 0 {
+		py_DecRef(pvalue)
+	}
+	if ptraceback != 0 {
+		py_DecRef(ptraceback)
+	}
+
+	if msg == "" {
+		return ErrRunFailed
+	}
+	return fmt.Errorf("%w: %s", ErrRunFailed, msg)
+}
+
 // executeCode runs Python code and populates the runContext with results.
 func executeCode(ctx *runContext) {
 	ctx.cond.L.Lock()
@@ -386,8 +425,7 @@ func executeCode(ctx *runContext) {
 
 	pyRun_String(ctx.code, pyFileInput, globals, globals)
 	if pyErr_Occurred() {
-		pyErr_Print()
-		ctx.err = ErrRunFailed
+		ctx.err = fetchPythonError()
 	} else if item := pyDict_GetItemString(globals, "_result"); item != 0 {
 		ctx.value = pyUnicode_AsUTF8(item)
 	} else {
