@@ -40,11 +40,10 @@ type pyStatus struct {
 	exitcode int32
 }
 
-// Constants for pyInterpreterConfig.gil
+// Constants used in the Python C API.
 const (
-	pyInterpreterConfigDefaultGIL = 0
-	pyInterpreterConfigSharedGIL  = 1
-	pyInterpreterConfigOwnGIL     = 2
+	pyFileInput               = 257
+	pyInterpreterConfigOwnGIL = 2
 )
 
 // Function prototypes for the Python C API.
@@ -66,9 +65,6 @@ var pyThreadState_Swap func(pyThreadState) pyThreadState
 var pyThreadState_Get func() pyThreadState
 var pyEval_SaveThread func() pyThreadState
 var pyEval_RestoreThread func(pyThreadState)
-
-// Constants used in the Python C API.
-const pyFileInput = 257
 
 var (
 	// ErrAlreadyInitialized is returned when the Python interpreter is initialized more than once.
