@@ -87,9 +87,6 @@ var (
 // python is a handle to the Python shared library.
 var python uintptr
 
-// supportsSubInterpreters indicates whether Python 3.12+ sub-interpreters with per-interpreter GIL are available.
-var supportsSubInterpreters bool
-
 // workerPool is the global pool of Python workers.
 var workerPool *pool
 
@@ -103,51 +100,13 @@ type worker struct {
 	done     chan struct{}
 }
 
-// pool manages a collection of workers.
-type pool struct {
-	workers []*worker
-	next    atomic.Uint64
-	closed  atomic.Bool
-}
-
-// Init initializes the Python interpreter with runtime.NumCPU() workers.
-// This must be called before any other functions in this package.
+// Init initializes the Python interpreter with runtime.NumCPU() workers. This must be called before
+// any other functions in this package. When using packages that are incompatible with sub-interpreters,
+// use [InitSingleWorker] instead.
 func Init(libraryPath string) error {
-	if python != 0 {
-		return ErrAlreadyInitialized
-	}
-
-	lib, err := purego.Dlopen(libraryPath, purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	supportsSubInterpreters, err := initPython(libraryPath)
 	if err != nil {
-		return fmt.Errorf("dlopen: %v", err)
-	}
-	python = lib
-
-	// Register core Python C API functions
-	purego.RegisterLibFunc(&py_InitializeEx, python, "Py_InitializeEx")
-	purego.RegisterLibFunc(&py_Finalize, python, "Py_Finalize")
-	purego.RegisterLibFunc(&pyEval_GetBuiltins, python, "PyEval_GetBuiltins")
-	purego.RegisterLibFunc(&pyErr_Occurred, python, "PyErr_Occurred")
-	purego.RegisterLibFunc(&pyErr_Print, python, "PyErr_Print")
-	purego.RegisterLibFunc(&pyErr_Fetch, python, "PyErr_Fetch")
-	purego.RegisterLibFunc(&pyErr_Clear, python, "PyErr_Clear")
-	purego.RegisterLibFunc(&pyObject_Str, python, "PyObject_Str")
-	purego.RegisterLibFunc(&pyDict_New, python, "PyDict_New")
-	purego.RegisterLibFunc(&pyDict_GetItemString, python, "PyDict_GetItemString")
-	purego.RegisterLibFunc(&pyDict_SetItemString, python, "PyDict_SetItemString")
-	purego.RegisterLibFunc(&pyUnicode_AsUTF8, python, "PyUnicode_AsUTF8")
-	purego.RegisterLibFunc(&py_DecRef, python, "Py_DecRef")
-	purego.RegisterLibFunc(&pyRun_String, python, "PyRun_String")
-	purego.RegisterLibFunc(&py_GetVersion, python, "Py_GetVersion")
-
-	supportsSubInterpreters := platformSupportsSubInterpreters && checkPythonVersion()
-	if supportsSubInterpreters {
-		purego.RegisterLibFunc(&py_NewInterpreterFromConfig, python, "Py_NewInterpreterFromConfig")
-		purego.RegisterLibFunc(&py_EndInterpreter, python, "Py_EndInterpreter")
-		purego.RegisterLibFunc(&pyThreadState_Swap, python, "PyThreadState_Swap")
-		purego.RegisterLibFunc(&pyThreadState_Get, python, "PyThreadState_Get")
-		purego.RegisterLibFunc(&pyEval_SaveThread, python, "PyEval_SaveThread")
-		purego.RegisterLibFunc(&pyEval_RestoreThread, python, "PyEval_RestoreThread")
+		return err
 	}
 
 	numWorkers := runtime.NumCPU()
@@ -156,6 +115,20 @@ func Init(libraryPath string) error {
 	}
 	if supportsSubInterpreters && numWorkers > 1 {
 		return initWithSubInterpreters(numWorkers)
+	}
+	return initSingleWorker()
+}
+
+// InitSingleWorker initializes the Python interpreter with a single worker, disabling sub-interpreters.
+// Use this when running Python code that uses C extension modules incompatible with sub-interpreters.
+// This must be called before any other functions in this package. Use [Init] for normal usage.
+func InitSingleWorker(libraryPath string) error {
+	if _, err := initPython(libraryPath); err != nil {
+		return err
+	}
+
+	workerPool = &pool{
+		workers: make([]*worker, 0, 1),
 	}
 	return initSingleWorker()
 }
@@ -186,6 +159,56 @@ func Run[TInput, TResult any](program Program[TInput, TResult], arg TInput) (TRe
 	}
 
 	return value, nil
+}
+
+// pool manages a collection of workers.
+type pool struct {
+	workers []*worker
+	next    atomic.Uint64
+	closed  atomic.Bool
+}
+
+// initPython initializes the Python library and registers C API functions.
+// Returns whether sub-interpreters are supported.
+func initPython(libraryPath string) (bool, error) {
+	if python != 0 {
+		return false, ErrAlreadyInitialized
+	}
+
+	lib, err := purego.Dlopen(libraryPath, purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	if err != nil {
+		return false, fmt.Errorf("dlopen: %v", err)
+	}
+	python = lib
+
+	// Register core Python C API functions
+	purego.RegisterLibFunc(&py_InitializeEx, python, "Py_InitializeEx")
+	purego.RegisterLibFunc(&py_Finalize, python, "Py_Finalize")
+	purego.RegisterLibFunc(&pyEval_GetBuiltins, python, "PyEval_GetBuiltins")
+	purego.RegisterLibFunc(&pyErr_Occurred, python, "PyErr_Occurred")
+	purego.RegisterLibFunc(&pyErr_Print, python, "PyErr_Print")
+	purego.RegisterLibFunc(&pyErr_Fetch, python, "PyErr_Fetch")
+	purego.RegisterLibFunc(&pyErr_Clear, python, "PyErr_Clear")
+	purego.RegisterLibFunc(&pyObject_Str, python, "PyObject_Str")
+	purego.RegisterLibFunc(&pyDict_New, python, "PyDict_New")
+	purego.RegisterLibFunc(&pyDict_GetItemString, python, "PyDict_GetItemString")
+	purego.RegisterLibFunc(&pyDict_SetItemString, python, "PyDict_SetItemString")
+	purego.RegisterLibFunc(&pyUnicode_AsUTF8, python, "PyUnicode_AsUTF8")
+	purego.RegisterLibFunc(&py_DecRef, python, "Py_DecRef")
+	purego.RegisterLibFunc(&pyRun_String, python, "PyRun_String")
+	purego.RegisterLibFunc(&py_GetVersion, python, "Py_GetVersion")
+
+	supportsSubInterpreters := platformSupportsSubInterpreters && checkPythonVersion()
+	if supportsSubInterpreters {
+		purego.RegisterLibFunc(&py_NewInterpreterFromConfig, python, "Py_NewInterpreterFromConfig")
+		purego.RegisterLibFunc(&py_EndInterpreter, python, "Py_EndInterpreter")
+		purego.RegisterLibFunc(&pyThreadState_Swap, python, "PyThreadState_Swap")
+		purego.RegisterLibFunc(&pyThreadState_Get, python, "PyThreadState_Get")
+		purego.RegisterLibFunc(&pyEval_SaveThread, python, "PyEval_SaveThread")
+		purego.RegisterLibFunc(&pyEval_RestoreThread, python, "PyEval_RestoreThread")
+	}
+
+	return supportsSubInterpreters, nil
 }
 
 // RunWrite runs a [Program] with the supplied argument with the Python program writing to the supplied writer.
@@ -274,7 +297,7 @@ func initSingleWorker() error {
 	}
 	workerPool.workers = append(workerPool.workers, w)
 
-	go startLegacyWorker(w)
+	go startSingleWorker(w)
 	<-w.ready
 	return w.initErr
 }
@@ -332,8 +355,8 @@ func initWithSubInterpreters(numWorkers int) error {
 	return nil
 }
 
-// startLegacyWorker runs a single worker using the legacy single-interpreter approach.
-func startLegacyWorker(w *worker) {
+// startSingleWorker runs a single worker using the single-interpreter approach.
+func startSingleWorker(w *worker) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
