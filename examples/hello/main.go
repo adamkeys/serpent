@@ -25,12 +25,12 @@ func main() {
 	var wg sync.WaitGroup
 	wg.Add(10)
 	for i := 0; i < 10; i++ {
-		go func() {
+		go func(i int) {
 			defer wg.Done()
 			if err := serpent.RunWrite(os.Stdout, program, i); err != nil {
 				log.Fatalf("run write: %v", err)
 			}
-		}()
+		}(i)
 	}
 	wg.Wait()
 }

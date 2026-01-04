@@ -22,9 +22,23 @@ func main() {
 	if err := serpent.InitSingleWorker(lib); err != nil {
 		log.Fatalf("failed to initialize serpent: %v", err)
 	}
-	entities, err := serpent.Run(program, "Apple was founded by Steve Jobs in Cupertino, California.")
+
+	exec, err := serpent.Load(program)
 	if err != nil {
-		log.Fatalf("run result: %v", err)
+		log.Fatalf("load program: %v", err)
 	}
-	fmt.Printf("found entities: %s\n", strings.Join(entities, ", "))
+	defer exec.Close()
+
+	inputs := []string{
+		"Apple was founded by Steve Jobs in Cupertino, California.",
+		"Google was founded by Larry Page and Sergey Brin while they were Ph.D. students at Stanford University.",
+		"Microsoft was founded by Bill Gates and Paul Allen on April 4, 1975, in Albuquerque, New Mexico.",
+	}
+	for _, input := range inputs {
+		entities, err := exec.Run(input)
+		if err != nil {
+			log.Fatalf("run result: %v", err)
+		}
+		fmt.Printf("found entities: %s\n", strings.Join(entities, ", "))
+	}
 }

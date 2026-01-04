@@ -67,6 +67,37 @@ See the [examples/](examples/) directory for more complete demonstrations includ
 - **`Run[I, O](program Program[I, O], input I) (O, error)`** - Executes Python code and returns the result
 - **`RunWrite[I](w io.Writer, program Program[I, Writer], input I) error`** - Executes Python code that writes to a Go io.Writer
 
+### Reusable Executables
+
+For programs you want to call multiple times, use `Load` to create a reusable executable:
+
+- **`Load[I, O](program Program[I, O]) (*Executable[I, O], error)`** - Loads a program for repeated execution
+- **`LoadWriter[I](program Program[I, Writer]) (*WriterExecutable[I], error)`** - Loads a writer program for repeated execution
+
+```go
+exec, err := serpent.Load(program)
+if err != nil {
+    log.Fatal(err)
+}
+defer exec.Close()
+
+// Call multiple times - state persists between calls
+result1, _ := exec.Run(input1)
+result2, _ := exec.Run(input2)
+```
+
+An `Executable` is pinned to a single worker on its first `Run()` call, so module-level state (imports, global variables) persists across calls. This is useful for expensive initialization like loading ML models:
+
+```python
+from transformers import pipeline
+
+# Loaded once, reused across all Run() calls
+ner = pipeline("ner")
+
+def run(input):
+    return ner(input)
+```
+
 ### Program Definition
 
 A `Program[I, O]` is simply a string containing Python code:
