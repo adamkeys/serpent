@@ -56,11 +56,18 @@ var pyErr_Print func()
 var pyErr_Fetch func(*pyObject, *pyObject, *pyObject)
 var pyErr_Clear func()
 var pyObject_Str func(pyObject) pyObject
+var pyObject_Call func(pyObject, pyObject, pyObject) pyObject
+var pyObject_GetAttrString func(pyObject, string) pyObject
 var pyDict_New func() pyObject
 var pyDict_GetItemString func(pyObject, string) pyObject
 var pyDict_SetItemString func(pyObject, string, pyObject) int
 var pyUnicode_AsUTF8 func(pyObject) string
+var pyUnicode_FromString func(string) pyObject
+var pyTuple_New func(int) pyObject
+var pyTuple_SetItem func(pyObject, int, pyObject) int
+var pyImport_ImportModule func(string) pyObject
 var py_DecRef func(pyObject)
+var py_IncRef func(pyObject)
 var py_GetVersion func() string
 var py_NewInterpreterFromConfig func(*pyThreadState, *pyInterpreterConfig) pyStatus
 var py_EndInterpreter func(pyThreadState)
@@ -74,8 +81,6 @@ var (
 	ErrAlreadyInitialized = errors.New("already initialized")
 	// ErrRunFailed is returned when the Python program fails to run.
 	ErrRunFailed = errors.New("run failed")
-	// ErrNoResult is returned when the result variable is not found in the Python program.
-	ErrNoResult = errors.New("no result")
 	// ErrSubInterpreterFailed is returned when a sub-interpreter fails to initialize.
 	ErrSubInterpreterFailed = errors.New("sub-interpreter creation failed")
 	// ErrNoHealthyWorkers is returned when all workers have failed.
@@ -133,12 +138,13 @@ func InitSingleWorker(libraryPath string) error {
 	return initSingleWorker()
 }
 
-// Run runs a [Program] with the supplied argument and returns the result. The Python code must assign
-// a result variable in the main program.
+// Run runs a [Program] with the supplied argument and returns the result. The Python code must
+// define a run() function that accepts the input and returns a JSON-serializable value.
 //
 // Example Python program:
 //
-//	result = input + 1
+//	def run(input):
+//	    return input + 1
 func Run[TInput, TResult any](program Program[TInput, TResult], arg TInput) (TResult, error) {
 	checkInit()
 
@@ -146,9 +152,8 @@ func Run[TInput, TResult any](program Program[TInput, TResult], arg TInput) (TRe
 	if err != nil {
 		return *new(TResult), fmt.Errorf("marshal input: %w", err)
 	}
-	code := generateCode(string(program), input)
 
-	result, err := run(code)
+	result, err := run(string(program), string(input))
 	if err != nil {
 		return *new(TResult), err
 	}
@@ -190,11 +195,18 @@ func initPython(libraryPath string) (bool, error) {
 	purego.RegisterLibFunc(&pyErr_Fetch, python, "PyErr_Fetch")
 	purego.RegisterLibFunc(&pyErr_Clear, python, "PyErr_Clear")
 	purego.RegisterLibFunc(&pyObject_Str, python, "PyObject_Str")
+	purego.RegisterLibFunc(&pyObject_Call, python, "PyObject_Call")
+	purego.RegisterLibFunc(&pyObject_GetAttrString, python, "PyObject_GetAttrString")
 	purego.RegisterLibFunc(&pyDict_New, python, "PyDict_New")
 	purego.RegisterLibFunc(&pyDict_GetItemString, python, "PyDict_GetItemString")
 	purego.RegisterLibFunc(&pyDict_SetItemString, python, "PyDict_SetItemString")
 	purego.RegisterLibFunc(&pyUnicode_AsUTF8, python, "PyUnicode_AsUTF8")
+	purego.RegisterLibFunc(&pyUnicode_FromString, python, "PyUnicode_FromString")
+	purego.RegisterLibFunc(&pyTuple_New, python, "PyTuple_New")
+	purego.RegisterLibFunc(&pyTuple_SetItem, python, "PyTuple_SetItem")
+	purego.RegisterLibFunc(&pyImport_ImportModule, python, "PyImport_ImportModule")
 	purego.RegisterLibFunc(&py_DecRef, python, "Py_DecRef")
+	purego.RegisterLibFunc(&py_IncRef, python, "Py_IncRef")
 	purego.RegisterLibFunc(&pyRun_String, python, "PyRun_String")
 	purego.RegisterLibFunc(&py_GetVersion, python, "Py_GetVersion")
 
@@ -212,14 +224,12 @@ func initPython(libraryPath string) (bool, error) {
 }
 
 // RunWrite runs a [Program] with the supplied argument with the Python program writing to the supplied writer.
-// The writer is made available as a file descriptor (fd) in the Python program. The Python program must close
-// the file descriptor when it is done writing.
+// The Python code must define a run() function that accepts the input and a writer object.
 //
 // Example Python program:
 //
-//	import os
-//	os.write(fd, b'OK')
-//	os.close(fd)
+//	def run(input, writer):
+//	    writer.write(b'OK')
 func RunWrite[TInput any](w io.Writer, program Program[TInput, Writer], arg TInput) error {
 	checkInit()
 
@@ -242,10 +252,14 @@ func RunWrite[TInput any](w io.Writer, program Program[TInput, Writer], arg TInp
 	if err != nil {
 		return fmt.Errorf("marshal input: %w", err)
 	}
-	code := generateWriterCode(string(program), input)
+	code := generateWriterCode(string(program))
 
-	_, err = run(code)
-	if !errors.Is(err, ErrNoResult) {
+	_, err = run(code, string(input))
+	// Writer functions don't return a value, so we ignore ErrNoResult
+	// but we need to handle the case where run() returns None
+	if err != nil {
+		pw.Close()
+		wg.Wait()
 		return err
 	}
 
@@ -442,24 +456,122 @@ func fetchPythonError() error {
 // executeCode runs Python code and populates the runContext with results.
 func executeCode(ctx *runContext) {
 	ctx.cond.L.Lock()
+	defer func() {
+		ctx.done = true
+		ctx.cond.Signal()
+		ctx.cond.L.Unlock()
+	}()
 
 	globals := pyDict_New()
+	defer py_DecRef(globals)
 	pyDict_SetItemString(globals, "__builtins__", pyEval_GetBuiltins())
 
 	pyRun_String(ctx.code, pyFileInput, globals, globals)
 	if pyErr_Occurred() {
 		ctx.err = fetchPythonError()
-	} else if item := pyDict_GetItemString(globals, "_result"); item != 0 {
-		ctx.value = pyUnicode_AsUTF8(item)
-	} else {
-		ctx.err = ErrNoResult
+		return
 	}
 
-	ctx.done = true
-	ctx.cond.Signal()
-	ctx.cond.L.Unlock()
+	ctx.value, ctx.err = callRun(globals, ctx.input)
+}
 
-	py_DecRef(globals)
+// callRun invokes the run function defined in globals with the JSON input,
+// and returns the JSON-serialized result.
+func callRun(globals pyObject, jsonInput string) (string, error) {
+	runfn := pyDict_GetItemString(globals, "run")
+	if runfn == 0 {
+		return "", fmt.Errorf("%w: run() function not defined", ErrRunFailed)
+	}
+
+	json := pyImport_ImportModule("json")
+	if json == 0 {
+		if pyErr_Occurred() {
+			return "", fetchPythonError()
+		}
+		return "", fmt.Errorf("%w: failed to import json module", ErrRunFailed)
+	}
+	defer py_DecRef(json)
+
+	loadsfn := pyObject_GetAttrString(json, "loads")
+	if loadsfn == 0 {
+		if pyErr_Occurred() {
+			return "", fetchPythonError()
+		}
+		return "", fmt.Errorf("%w: failed to get json.loads", ErrRunFailed)
+	}
+	defer py_DecRef(loadsfn)
+
+	dumpsfn := pyObject_GetAttrString(json, "dumps")
+	if dumpsfn == 0 {
+		if pyErr_Occurred() {
+			return "", fetchPythonError()
+		}
+		return "", fmt.Errorf("%w: failed to get json.dumps", ErrRunFailed)
+	}
+	defer py_DecRef(dumpsfn)
+
+	input := pyUnicode_FromString(jsonInput)
+	if input == 0 {
+		if pyErr_Occurred() {
+			return "", fetchPythonError()
+		}
+		return "", fmt.Errorf("%w: failed to create input string", ErrRunFailed)
+	}
+	defer py_DecRef(input)
+
+	loadsArgs := pyTuple_New(1)
+	if loadsArgs == 0 {
+		return "", fmt.Errorf("%w: failed to create loads args tuple", ErrRunFailed)
+	}
+	py_IncRef(input)
+	pyTuple_SetItem(loadsArgs, 0, input)
+
+	parsedInput := pyObject_Call(loadsfn, loadsArgs, 0)
+	py_DecRef(loadsArgs)
+	if parsedInput == 0 {
+		if pyErr_Occurred() {
+			return "", fetchPythonError()
+		}
+		return "", fmt.Errorf("%w: failed to parse input JSON", ErrRunFailed)
+	}
+	defer py_DecRef(parsedInput)
+
+	runArgs := pyTuple_New(1)
+	if runArgs == 0 {
+		return "", fmt.Errorf("%w: failed to create run args tuple", ErrRunFailed)
+	}
+	py_IncRef(parsedInput)
+	pyTuple_SetItem(runArgs, 0, parsedInput)
+
+	result := pyObject_Call(runfn, runArgs, 0)
+	py_DecRef(runArgs)
+	if result == 0 {
+		if pyErr_Occurred() {
+			return "", fetchPythonError()
+		}
+		return "", fmt.Errorf("%w: run() returned NULL", ErrRunFailed)
+	}
+	defer py_DecRef(result)
+
+	dumpsArgs := pyTuple_New(1)
+	if dumpsArgs == 0 {
+		return "", fmt.Errorf("%w: failed to create dumps args tuple", ErrRunFailed)
+	}
+	py_IncRef(result)
+	pyTuple_SetItem(dumpsArgs, 0, result)
+
+	jsonResult := pyObject_Call(dumpsfn, dumpsArgs, 0)
+	py_DecRef(dumpsArgs)
+	if jsonResult == 0 {
+		if pyErr_Occurred() {
+			return "", fetchPythonError()
+		}
+		return "", fmt.Errorf("%w: failed to serialize result to JSON", ErrRunFailed)
+	}
+	defer py_DecRef(jsonResult)
+
+	resultStr := pyUnicode_AsUTF8(jsonResult)
+	return resultStr, nil
 }
 
 // Close shuts down the Python interpreter and all workers.
@@ -488,7 +600,8 @@ func Close() error {
 
 // runContext identifies the context of a Python run.
 type runContext struct {
-	code string
+	code  string
+	input string
 
 	cond *sync.Cond
 	done bool
@@ -498,7 +611,7 @@ type runContext struct {
 }
 
 // run runs a Python program and returns the result.
-func run(code string) (string, error) {
+func run(code, input string) (string, error) {
 	if workerPool == nil || len(workerPool.workers) == 0 {
 		return "", ErrNoHealthyWorkers
 	}
@@ -508,14 +621,17 @@ func run(code string) (string, error) {
 	cond.L.Lock()
 	defer cond.L.Unlock()
 
-	ctx := &runContext{code: code, cond: cond}
-
 	idx := workerPool.next.Add(1) % uint64(len(workerPool.workers))
 	w := workerPool.workers[idx]
 	if w.initErr != nil {
 		return "", fmt.Errorf("%w: %v", ErrSubInterpreterFailed, w.initErr)
 	}
 
+	ctx := &runContext{
+		code:  code,
+		input: input,
+		cond:  cond,
+	}
 	w.requests <- ctx
 	for !ctx.done {
 		cond.Wait()

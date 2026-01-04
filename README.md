@@ -41,7 +41,7 @@ func main() {
         log.Fatal(err)
     }
 
-    program := serpent.Program[int, int]("result = input * 2")
+    program := serpent.Program[int, int]("def run(input): return input * 2")
     result, err := serpent.Run(program, 21)
     if err != nil {
         log.Fatal(err)
@@ -75,33 +75,37 @@ A `Program[I, O]` is simply a string containing Python code:
 type Program[I, O any] string
 ```
 
-Your Python code has access to:
+Your Python code should define a `run` function:
 
-- `input` - The input value (serialized as JSON)
-- `result` - Set this variable to return a value to Go (will be serialized as JSON)
-- `fd` - A file descriptor for writing output (when using `RunWrite`)
+- **`def run(input):`** - For `Run`, return the result value
+- **`def run(input, writer):`** - For `RunWrite`, write to the provided writer
 
 ## Python Code Guidelines
 
 ### Returning Values
 
-Your Python code must set a variable named `result` for the output:
+Define a `run` function that takes input and returns the result:
 
 ```python
-# Python receives 'input' and must set 'result'
-result = input.upper()
+def run(input):
+    return input.upper()
 ```
 
 ### Writing Output
 
-When using `RunWrite`, Python has access to a file descriptor `fd`:
+When using `RunWrite`, your `run` function receives a `writer` object:
 
 ```python
-import os
-
-os.write(fd, f"Hello from Python: {input}\n".encode())
-os.close(fd)
+def run(input, writer):
+    writer.write(f"Hello from Python: {input}\n")
 ```
+
+The `writer` object provides:
+
+- **`write(data)`** - Write string or bytes (strings are auto-encoded as UTF-8)
+- **`flush()`** - Flush the output (no-op, writes are unbuffered)
+
+The writer is automatically closed when your function returns.
 
 ### Using External Libraries
 
@@ -111,8 +115,10 @@ Python code can import any library available in the Python environment:
 from transformers import pipeline
 
 ner = pipeline("ner", grouped_entities=True)
-entities = ner(input)
-result = [e["word"] for e in entities]
+
+def run(input):
+    entities = ner(input)
+    return [e["word"] for e in entities]
 ```
 
 **Note**: Libraries that don't support sub-interpreters require initialization with `InitSingleWorker()` instead of `Init()`.

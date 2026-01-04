@@ -12,7 +12,7 @@ import (
 )
 
 func TestRun_Add(t *testing.T) {
-	program := serpent.Program[int, int]("result = input + 2")
+	program := serpent.Program[int, int]("def run(input): return input + 2")
 	result, err := serpent.Run(program, 1)
 	if err != nil {
 		t.Fatalf("run result: %v", err)
@@ -25,7 +25,7 @@ func TestRun_Add(t *testing.T) {
 }
 
 func TestRun_Struct(t *testing.T) {
-	program := serpent.Program[struct{ Name string }, string]("result = input['Name']")
+	program := serpent.Program[struct{ Name string }, string]("def run(input): return input['Name']")
 	result, err := serpent.Run(program, struct{ Name string }{Name: "test"})
 	if err != nil {
 		t.Fatalf("run result: %v", err)
@@ -39,7 +39,7 @@ func TestRun_Struct(t *testing.T) {
 
 func TestRun_EscapedString(t *testing.T) {
 	const exp = "\"test\""
-	program := serpent.Program[string, string]("result = input")
+	program := serpent.Program[string, string]("def run(input): return input")
 	result, err := serpent.Run(program, exp)
 	if err != nil {
 		t.Fatalf("run result: %v", err)
@@ -51,7 +51,7 @@ func TestRun_EscapedString(t *testing.T) {
 }
 
 func TestRun_ImportTwice(t *testing.T) {
-	program := serpent.Program[int, int]("import os; result = input + 2")
+	program := serpent.Program[int, int]("import os\ndef run(input): return input + 2")
 	_, err := serpent.Run(program, 1)
 	if err != nil {
 		t.Fatalf("run result: %v", err)
@@ -70,22 +70,22 @@ func TestRun_InvalidProgram(t *testing.T) {
 	}{
 		{
 			"SyntaxError",
-			"(",
+			"def run(input): (",
 			"was never closed",
 		},
 		{
 			"NameError",
-			"result = undefined_var",
+			"def run(input): return undefined_var",
 			"name 'undefined_var' is not defined",
 		},
 		{
 			"ZeroDivisionError",
-			"result = 1 / 0",
+			"def run(input): return 1 / 0",
 			"division by zero",
 		},
 		{
 			"TypeError",
-			"result = 'string' + 1",
+			"def run(input): return 'string' + 1",
 			"can only concatenate str",
 		},
 	}
@@ -104,11 +104,14 @@ func TestRun_InvalidProgram(t *testing.T) {
 	}
 }
 
-func TestRun_NoResult(t *testing.T) {
-	program := serpent.Program[string, string]("input")
+func TestRun_NoRunFunction(t *testing.T) {
+	program := serpent.Program[string, string]("x = 1")
 	_, err := serpent.Run(program, "test")
-	if !errors.Is(err, serpent.ErrNoResult) {
-		t.Errorf("expected error: %v; got: %v", serpent.ErrNoResult, err)
+	if !errors.Is(err, serpent.ErrRunFailed) {
+		t.Errorf("expected error: %v; got: %v", serpent.ErrRunFailed, err)
+	}
+	if err == nil || !contains(err.Error(), "run() function not defined") {
+		t.Errorf("expected error containing 'run() function not defined'; got: %v", err)
 	}
 }
 
@@ -117,7 +120,12 @@ func TestRun_SlowExecution(t *testing.T) {
 		t.Skip("skipping slow test")
 	}
 
-	program := serpent.Program[string, string]("import time; time.sleep(1); result = input")
+	program := serpent.Program[string, string](`
+import time
+def run(input):
+    time.sleep(1)
+    return input
+`)
 	result, err := serpent.Run(program, "test")
 	if err != nil {
 		t.Fatalf("run result: %v", err)
@@ -128,7 +136,7 @@ func TestRun_SlowExecution(t *testing.T) {
 }
 
 func TestRun_MultiExecution(t *testing.T) {
-	program := serpent.Program[*struct{}, int]("result = 1 + 1")
+	program := serpent.Program[*struct{}, int]("def run(input): return 1 + 1")
 	results := make([]int, 10)
 	errCh := make(chan error, len(results))
 	var wg sync.WaitGroup
@@ -163,8 +171,9 @@ func TestRun_MultiExecution(t *testing.T) {
 func TestRun_FunctionScope(t *testing.T) {
 	program := serpent.Program[*struct{}, int](`import math
 def calc():
-	return int(math.sqrt(4))
-result = calc()
+    return int(math.sqrt(4))
+def run(input):
+    return calc()
 `)
 	result, err := serpent.Run(program, nil)
 	if err != nil {
@@ -180,9 +189,8 @@ result = calc()
 func TestRunWrite_WriteOK(t *testing.T) {
 	var buf bytes.Buffer
 	program := serpent.Program[*struct{}, serpent.Writer](`
-import os
-os.write(fd, b'OK')
-os.close(fd)
+def run(input, writer):
+    writer.write(b'OK')
 `)
 	err := serpent.RunWrite(&buf, program, nil)
 	if err != nil {

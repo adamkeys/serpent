@@ -1,4 +1,2 @@
-import os
-
-os.write(fd, f"{input}: Hello World\n".encode())
-os.close(fd)
+def run(input, writer):
+    writer.write(f"{input}: Hello World\n")

@@ -16,6 +16,6 @@ func main() {
 		log.Fatalf("failed to initialize serpent: %v", err)
 	}
 
-	program := serpent.Program[int, int]("result = input")
+	program := serpent.Program[int, int]("def run(input): return input")
 	fmt.Println(serpent.Run(program, 42))
 }
