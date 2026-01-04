@@ -118,17 +118,22 @@ func Close() error {
 
 // Executable represents a loaded Python program that can be called multiple times.
 // It is pinned to a single worker on first Run(), preserving module-level state across calls.
+// An [Executable] is not safe for concurrent use; create a separate instance for each goroutine.
 type Executable[TInput, TResult any] struct {
 	executable
 }
 
-// Load loads a Python program and returns an Executable that can be called multiple times.
+// Load loads a Python program and returns an [Executable] that can be called multiple times.
 // The executable is pinned to a worker on first Run(), and all subsequent calls use the same worker.
 func Load[TInput, TResult any](program Program[TInput, TResult]) (*Executable[TInput, TResult], error) {
 	checkInit()
-	return &Executable[TInput, TResult]{
+	exec := &Executable[TInput, TResult]{
 		executable: executable{code: string(program)},
-	}, nil
+	}
+	if err := exec.pin(); err != nil {
+		return nil, fmt.Errorf("pin: %w", err)
+	}
+	return exec, nil
 }
 
 // Run executes the loaded program with the given input.
@@ -138,10 +143,6 @@ func (e *Executable[TInput, TResult]) Run(arg TInput) (TResult, error) {
 	input, err := json.Marshal(arg)
 	if err != nil {
 		return *new(TResult), fmt.Errorf("marshal input: %w", err)
-	}
-
-	if err := e.pin(); err != nil {
-		return *new(TResult), err
 	}
 
 	result, err := e.runOnWorker(string(input))
@@ -158,6 +159,7 @@ func (e *Executable[TInput, TResult]) Run(arg TInput) (TResult, error) {
 }
 
 // WriterExecutable represents a loaded Python program that writes to an output stream.
+// A [WriterExecutable] is not safe for concurrent use; create a separate instance for each goroutine.
 type WriterExecutable[TInput any] struct {
 	executable
 }
@@ -165,9 +167,13 @@ type WriterExecutable[TInput any] struct {
 // LoadWriter loads a Python program that writes to an output stream.
 func LoadWriter[TInput any](program Program[TInput, Writer]) (*WriterExecutable[TInput], error) {
 	checkInit()
-	return &WriterExecutable[TInput]{
+	exec := &WriterExecutable[TInput]{
 		executable: executable{code: generateWriterCode(string(program))},
-	}, nil
+	}
+	if err := exec.pin(); err != nil {
+		return nil, fmt.Errorf("pin: %w", err)
+	}
+	return exec, nil
 }
 
 // Run executes the loaded program, writing output to the provided writer.
@@ -192,12 +198,6 @@ func (e *WriterExecutable[TInput]) Run(w io.Writer, arg TInput) error {
 		pw.Close()
 		wg.Wait()
 		return fmt.Errorf("marshal input: %w", err)
-	}
-
-	if err := e.pin(); err != nil {
-		pw.Close()
-		wg.Wait()
-		return err
 	}
 
 	_, err = e.runOnWorker(string(input))
@@ -275,14 +275,10 @@ type executable struct {
 	code   string
 	worker *worker
 	state  *execState
-	mu     sync.Mutex
 }
 
 // pin assigns this executable to a worker if not already pinned.
 func (b *executable) pin() error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	if b.worker == nil {
 		if workerPool == nil || len(workerPool.workers) == 0 {
 			return ErrNoHealthyWorkers
@@ -320,9 +316,6 @@ func (b *executable) runOnWorker(input string) (string, error) {
 
 // Close releases resources associated with the executable.
 func (b *executable) Close() error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	if b.state != nil && b.worker != nil {
 		var mu sync.Mutex
 		cond := sync.NewCond(&mu)
