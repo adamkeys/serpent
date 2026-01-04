@@ -1,6 +1,6 @@
 module github.com/adamkeys/serpent
 
-go 1.23.4
+go 1.18
 
 require github.com/ebitengine/purego v0.9.1
 

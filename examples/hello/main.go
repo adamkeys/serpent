@@ -24,7 +24,7 @@ func main() {
 
 	var wg sync.WaitGroup
 	wg.Add(10)
-	for i := range 10 {
+	for i := 0; i < 10; i++ {
 		go func() {
 			defer wg.Done()
 			if err := serpent.RunWrite(os.Stdout, program, i); err != nil {
