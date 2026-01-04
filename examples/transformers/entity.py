@@ -1,8 +1,7 @@
 from transformers import pipeline
 
 ner = pipeline("ner", grouped_entities=True)
-text = "Apple was founded by Steve Jobs in Cupertino, California."
-entities = ner(text)
+entities = ner(input)
 
 values = []
 for entity in entities:

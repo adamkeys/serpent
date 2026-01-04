@@ -22,7 +22,7 @@ func main() {
 	if err := serpent.InitSingleWorker(lib); err != nil {
 		log.Fatalf("failed to initialize serpent: %v", err)
 	}
-	entities, err := serpent.Run(program, "Apple was founded by Steve Jobs.")
+	entities, err := serpent.Run(program, "Apple was founded by Steve Jobs in Cupertino, California.")
 	if err != nil {
 		log.Fatalf("run result: %v", err)
 	}
